@@ -15,4 +15,5 @@
 vendor/
 gatekeeper
 *.bin
+*.log
 heatmap.json

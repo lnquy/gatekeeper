@@ -14,39 +14,6 @@ import (
 	"github.com/MarinX/keylogger"
 )
 
-func main() {
-	ctx, ctxCancel := context.WithCancel(context.Background())
-
-	dvc := keylogger.FindKeyboardDevice()
-	if dvc == "" {
-		log.Println("no keyboard found. exit")
-		return
-	}
-
-	kl, err := keylogger.New(dvc)
-	if err != nil {
-		log.Panicf("failed to create keylogger: %v", err)
-	}
-	eventChan := kl.Read()
-
-	wg := sync.WaitGroup{}
-	heatMap := heatmap{
-		l: &sync.RWMutex{},
-		m: make(map[string]int, 101),
-	}
-	ticker := time.NewTicker(time.Hour)
-	wg.Add(1)
-	logKey(ctx, eventChan, &wg, &heatMap, ticker)
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan)
-
-	<-sigChan
-	ctxCancel()
-	wg.Wait()
-	log.Println("main exit")
-}
-
 type heatmap struct {
 	m map[string]int
 	l *sync.RWMutex
@@ -68,28 +35,67 @@ func (hm *heatmap) Serialize() []byte {
 	return b
 }
 
+func main() {
+	f, err := os.OpenFile("gatekeeper.log", os.O_WRONLY|os.O_CREATE, 0666)
+	if err != nil {
+		log.Panicf("failed to open log file: %v", err)
+	}
+	defer f.Close()
+	log.SetOutput(f)
+
+	// Keylogger
+	dvc := keylogger.FindKeyboardDevice()
+	if dvc == "" {
+		log.Println("no keyboard found. exit")
+		return
+	}
+	kl, err := keylogger.New(dvc)
+	if err != nil {
+		log.Panicf("failed to create keylogger: %v", err)
+	}
+	defer kl.Close()
+	eventChan := kl.Read()
+
+	// Start background worker to log keys
+	ctx, ctxCancel := context.WithCancel(context.Background())
+	wg := sync.WaitGroup{}
+	heatMap := heatmap{
+		l: &sync.RWMutex{},
+		m: make(map[string]int, 101),
+	}
+	ticker := time.NewTicker(time.Minute*5)
+	wg.Add(1)
+	go logKey(ctx, eventChan, &wg, &heatMap, ticker)
+
+	// Graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan)
+	<-sigChan
+	ctxCancel()
+	wg.Wait()
+	log.Println("main exit")
+}
+
 func logKey(ctx context.Context, eventChan <-chan keylogger.InputEvent, wg *sync.WaitGroup, heatMap *heatmap, ticker *time.Ticker) {
 	defer wg.Done()
 
-	go func() {
-		for {
-			select {
-			case event := <-eventChan:
-				if event.Type == keylogger.EvKey && event.KeyPress() {
-					heatMap.Incr(event.KeyString())
-				}
-			case <-ticker.C:
-				b := heatMap.Serialize()
-				err := ioutil.WriteFile("heatmap.json", b, os.ModePerm)
-				if err != nil {
-					log.Printf("failed to write data to file: %v", err)
-				}
-				log.Println(string(b))
-			case <-ctx.Done():
-				ticker.Stop()
-				log.Println("logKey exit")
-				return
+	for {
+		select {
+		case event := <-eventChan:
+			if event.Type == keylogger.EvKey && event.KeyPress() {
+				heatMap.Incr(event.KeyString())
 			}
+		case <-ticker.C:
+			b := heatMap.Serialize()
+			err := ioutil.WriteFile("heatmap.json", b, 0666)
+			if err != nil {
+				log.Printf("failed to write data to file: %v", err)
+			}
+			log.Println(string(b))
+		case <-ctx.Done():
+			ticker.Stop()
+			log.Println("logKey exit")
+			return
 		}
-	}()
+	}
 }
