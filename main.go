@@ -64,6 +64,7 @@ func main() {
 		m: make(map[string]int, 101),
 	}
 	ticker := time.NewTicker(time.Minute*5)
+	defer ticker.Stop()
 	wg.Add(1)
 	go logKey(ctx, eventChan, &wg, &heatMap, ticker)
 
@@ -93,7 +94,6 @@ func logKey(ctx context.Context, eventChan <-chan keylogger.InputEvent, wg *sync
 			}
 			log.Println(string(b))
 		case <-ctx.Done():
-			ticker.Stop()
 			log.Println("logKey exit")
 			return
 		}
